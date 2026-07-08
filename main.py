@@ -33,6 +33,7 @@ import json
 
 import readcsv
 import LAS
+import las2
 
 import pandas as pd
 
@@ -247,27 +248,30 @@ nolito = config["others"].pop("nolito")
 
 lasfilenames = os.listdir(lasfilesdir)
 logdata = {}
-print(lasfilenames)
+
 for lasfilename in lasfilenames:
     print("Reading {} ...".format(lasfilename), end=" ")
     
-    lasfile = LAS.open(os.path.join(lasfilesdir, lasfilename), 'r')
-    lasfile.read()
+    #lasfile = LAS.open(os.path.join(lasfilesdir, lasfilename), 'r')
+    #lasfile.read()
+
+    lasfile = las2.LAS2Parser(os.path.join(lasfilesdir, lasfilename))
+    print(lasfile.data)
     
-    wellname = getstdwellname(lasfile.wellname)
+    wellname = os.path.splitext(lasfilename)[0]
     welldata = {}
     
-    depthidx = lasfile.curvesnames.index(depthmnem)
+    #depthidx = lasfile.data[depthmnem]['values']
     
     depthdata = {}
     depthdata["name"] = depthmnem
-    depthdata["unit"] = lasfile.curvesunits[depthidx]
-    depthdata["data"] = lasfile.data[depthidx]
+    depthdata["unit"] = lasfile.data[depthmnem]['unit']
+    depthdata["data"] = lasfile.data[depthmnem]['values']
     depthdata["displayname"] = getdisplayname(depthdata["name"], depthdata["unit"])
     
     welldata["depth"] = depthdata
     
-    if litomnem in lasfile.curvesnames:
+    if litomnem in lasfile.data.keys():
         litoidx = lasfile.curvesnames.index(litomnem)
         litodata = {}
         litodata["name"] = litomnem
@@ -290,14 +294,15 @@ for lasfilename in lasfilenames:
         curvedata["data"] = []
         curvedata["displayname"] = mnem
         
-        for idx, curvename in enumerate(lasfile.curvesnames):
+        for idx, curvename in enumerate(lasfile.data.keys()):
             if not curvename.startswith(mnem):
                 continue
             if curvedata["unit"] is None:
-                curvedata["unit"] = lasfile.curvesunits[idx]
-                curvedata["displayname"] = getdisplayname(curvedata["name"], curvedata["unit"])
+                curvedata["unit"] = lasfile.data[curvename]['unit']
+                #curvedata["displayname"] = getdisplayname(curvedata["name"], curvedata["unit"])
+                curvedata["displayname"] = curvename
             
-            curvedata["data"].append(lasfile.data[idx])
+            curvedata["data"].append(lasfile.data[curvename]['values'])
         
         if len(curvedata["data"]) > 1:
             curvedata["data"] = mergelogs(curvedata["data"])
