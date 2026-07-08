@@ -223,6 +223,7 @@ csvheader, csvdata = readcsv.readcsv(csvfile, **csvpars)
 
 wells = np.array(csvdata[csvrows.pop("well")], dtype=unicode)
 wellnames = np.unique(wells)
+print("wells",wells)
 
 labdata = {}
 for wellname in wellnames:
@@ -232,7 +233,7 @@ for wellname in wellnames:
     for key, index in csvrows.items():
         labdata[wellname][key] = np.array(csvdata[index], dtype=float)[where]
 
-print("")
+print("labdata",labdata)
 
 ###
 

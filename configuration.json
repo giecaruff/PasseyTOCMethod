@@ -20,10 +20,10 @@
     "mnemoics":
         {
             "depth": "DEPTH",
-            "dt": "DTCO",
-            "rt": "RT",
+            "dt": "DT",
+            "rt": "RT90",
             "gr": "GR",
-            "cali": "HCAL"
+            "cali": "CAL"
         }
     },
 "visualization":
