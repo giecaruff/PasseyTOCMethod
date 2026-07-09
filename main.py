@@ -2,64 +2,39 @@
 
 from __future__ import print_function
 
-# Python 2 compatibility from: https://github.com/oxplot/fysom/issues/1
-try:
-    unicode = unicode
-except NameError:
-    # 'unicode' is undefined, must be Python 3
-    str = str
-    unicode = str
-    bytes = bytes
-    basestring = (str,bytes)
-    raw_input = input
-else:
-    # 'unicode' exists, must be Python 2
-    str = str
-    unicode = unicode
-    bytes = str
-    basestring = basestring
-    raw_input = input
-
-import matplotlib
-matplotlib.use('TkAgg')
-
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy import signal
-from matplotlib.ticker import NullFormatter, NullLocator, MaxNLocator
 import codecs
 import json
+import os
 
-import readcsv
-import LAS
-import las2
-
+import dash
+from dash import Dash, Input, Output, State, dcc, html
+import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy import signal
 
-from mplwidgets import BaselinePicker, LiveLine, LOMPicker, DepthController
+import las2
+import readcsv
 
-if int(matplotlib.__version__[0]) >= 2:
-    colorsdict = dict(blue="C0", orange="C1", green="C2", red="C3", purple="C4",
-                      brown="C5", pink="C6", gray="C7", yellow="C8", cyan="C9")
-else:
-    colorsdict = dict(blue="b", orange="orange", green="g", red="r", purple="purple",
-                      brown="brow", pink="m", gray="k", yellow="y", cyan="c")
 
-with open('litocodes.json', 'r') as f:
-    litocodes = json.load(f)
-
-with open('litopatterns.json', 'r') as f:
-    litopatterns = json.load(f)
-
-# TODO: parametrizar linewidht, fontsize, etc...
-_FONTSIZE = 20.0
 _DEPTHSHIFT = 345.0
+_CONFIG_PATH = "configuration.json"
+_OUTPUT_CSV = "toc.csv"
 
-### BEGIN: FUNCTIONS ###
+_PLOTLY_COLORS = {
+    "blue": "#1f77b4",
+    "orange": "#ff7f0e",
+    "green": "#2ca02c",
+    "red": "#d62728",
+    "purple": "#9467bd",
+    "brown": "#8c564b",
+    "pink": "#e377c2",
+    "gray": "#7f7f7f",
+    "yellow": "#bcbd22",
+    "cyan": "#17becf",
+}
 
-def getstdwellname(wellname):
-    return " ".join(wellname.split())
 
 def getdisplayname(name, unit):
     if unit is None:
@@ -67,583 +42,641 @@ def getdisplayname(name, unit):
     unit = unit.strip()
     if unit:
         return "{} ({})".format(name.strip(), unit)
-    else:
-        return name.strip()
+    return name.strip()
+
 
 def mergelogs(logs):
     mergedlog = np.empty(len(logs[0]))
     mergedlog[:] = np.nan
-    
+
     for log in logs:
-        w = np.isfinite(log)
-        mergedlog[w] = log[w]
-    
+        where = np.isfinite(log)
+        mergedlog[where] = log[where]
+
     return mergedlog
 
-def baselinedatatolog(depth, baselinex, baseliney):
+
+def baselinedatatolog(depth, baseline):
     log = np.empty(depth.shape[0], dtype=float)
     log[:] = np.nan
-    
-    for x, y in zip(baselinex, baseliney):
-        ymin, ymax = sorted(y)
-        where = (depth >= ymin)*(depth <= ymax)
-        log[where] = x
-    
+    log[:] = baseline
     return log
 
+
 def passeymethod(dt, logrt, dtbaseline, logrtbaseline, lom):
-    dlogrt = (logrt - logrtbaseline) + 0.02*(dt - dtbaseline)
-    toc = dlogrt*10**(2.297 - 0.1688*lom)
+    dlogrt = (logrt - logrtbaseline) + 0.02 * (dt - dtbaseline)
+    toc = dlogrt * 10 ** (2.297 - 0.1688 * lom)
     return np.clip(toc, 0.0, 100.0)
 
-def logplot(ax, depth, log, color="C0", xlim=None, ylim=None, style='-'):
-    if style in ('-', '--', '-.', ':'):
-        linestyle = style
-        marker = None
-    else:
-        linestyle = ''
-        marker = style
-    line, = ax.plot(log, depth, c=color, ls=linestyle, marker=marker)
-    ax.grid(True)
-    
-    if xlim:
-        ax.set_xlim(xlim)
-    else:
-        xlim = ax.get_xlim()
-    
-    if ylim:
-        ax.set_ylim(ylim)
-    else:
-        ylim = ax.get_ylim()
-    
-    ax.tick_params(labelbottom=False)
-    ax.tick_params(labelleft=False)
-    ax.tick_params(width=0.0)
-    
-    return line
 
-def getdepthrect(ax, distance, width):
-    bottom = ax.get_position().y0
-    top = ax.get_position().y1
-    left = ax.get_position().x0 - width + distance
-    return [left, bottom, width, top-bottom]
-
-def getlegendrect(ax, distance, height):
-    left = ax.get_position().x0
-    right = ax.get_position().x1
-    bottom = ax.get_position().y1 + distance
-    return [left, bottom, right-left, height]
-
-def loglegend(ax, label, xlim, color, style, fontsize, linewidth=None):
-    ax.text(0.01, 0.01, str(xlim[0]).replace('.', ','), fontsize=fontsize, ha='left', va='bottom')
-    ax.text(0.99, 0.01, str(xlim[1]).replace('.', ','), fontsize=fontsize, ha='right', va='bottom')
-    ax.text(0.5, 0.56, label, fontsize=fontsize, ha='center', va='bottom')
-    
-    if style in ('-', '--', '-.', ':'):
-        linestyle = style
-        marker = None
-        x = [0.25, 0.75]
-        y = [0.5, 0.5]
-    else:
-        linestyle = ''
-        marker = style
-        x = [1.0/3.0, 0.5, 2.0/3.0]
-        y = [0.5, 0.5, 0.5]
-    
-    if linewidth is None:
-        linewidth = 1.0
-
-    ax.plot(x, y, c=color, ls=linestyle, marker=marker, lw=linewidth)
-    
-    ax.set_xlim([0.0, 1.0])
-    ax.set_ylim([0.0, 1.0])
-    
-    ax.xaxis.set_major_locator(NullLocator())
-    ax.xaxis.set_minor_locator(NullLocator())
-    ax.yaxis.set_major_locator(NullLocator())
-    ax.yaxis.set_minor_locator(NullLocator())
-
-def depthlegend(ax, label, fontsize, rotation=90.0):
-    ax.text(0.5, 0.5, label, fontsize=fontsize, ha='center', va='center', rotation=rotation)
-    
-    ax.set_xlim([0.0, 1.0])
-    ax.set_ylim([0.0, 1.0])
-    
-    ax.xaxis.set_major_locator(NullLocator())
-    ax.xaxis.set_minor_locator(NullLocator())
-    ax.yaxis.set_major_locator(NullLocator())
-    ax.yaxis.set_minor_locator(NullLocator())
-
-def emptytrack(ax, depthlim):
-    ax.set_xlim([0.0, 1.0])
-    ax.set_ylim(depthlim)
-    
-    ax.tick_params(labelbottom=False)
-    ax.tick_params(labelleft=False)
-    ax.tick_params(width=0.0)
-
-def classificationplot(ax, depth, classification, ylim=None):
-    if ylim:
-        ax.set_ylim(ylim)
-    
-    ax.set_xlim([0.0, 1.0])
-    ax.tick_params(labelbottom=False)
-    ax.tick_params(labelleft=False)
-    ax.tick_params(width=0.0)
-
-    classes = np.unique(classification)
-    
-    for cls in classes:
-        where = classification == cls
-        name = litocodes['codigo']['{:0>3}'.format(cls)]['nome'].lower()
-        color = litopatterns[name]['color']
-        color = [a/255.0 for a in color]
-        hatch = litopatterns[name]['hatch']
-        ax.fill_betweenx(depth, 0.0, 1.0, where, color=color, hatch=hatch, edgecolor='k', linewidth=0.0)
-    
-### END: FUNCTIONS ###
-
-###
-
-print("Loading configuration file.")
-
-with open("configuration.json", "r") as f:
-    config = json.load(f)
-
-print("")
-
-print("Reading CSV file.")
-
-csvfilename = config["labdata"].pop("filename")
-csvrows = config["labdata"].pop("rows")
-csvpars = config.pop("labdata")
-
-csvfile = codecs.open(csvfilename, encoding='latin-1')
-
-csvheader, csvdata = readcsv.readcsv(csvfile, **csvpars)
-
-wells = np.array(csvdata[csvrows.pop("well")], dtype=unicode)
-wellnames = np.unique(wells)
-print("wells",wells)
-
-labdata = {}
-for wellname in wellnames:
-    
-    labdata[wellname] = {}
-    where = wells == wellname
-    for key, index in csvrows.items():
-        labdata[wellname][key] = np.array(csvdata[index], dtype=float)[where]
-
-print("labdata",labdata)
-
-###
-
-print("Starting LAS files reading.")
-
-lasfilesdir = config["logdata"].pop("lasfilesdir")
-mnemoics = config["logdata"].pop("mnemoics")
-depthmnem = mnemoics.pop("depth")
-litomnem = False #mnemoics.pop("lito")
-nolito = config["others"].pop("nolito")
-
-lasfilenames = os.listdir(lasfilesdir)
-logdata = {}
-
-for lasfilename in lasfilenames:
-    print("Reading {} ...".format(lasfilename), end=" ")
-    
-    #lasfile = LAS.open(os.path.join(lasfilesdir, lasfilename), 'r')
-    #lasfile.read()
-
-    lasfile = las2.LAS2Parser(os.path.join(lasfilesdir, lasfilename))
-    print(lasfile.data)
-    
-    wellname = os.path.splitext(lasfilename)[0]
-    welldata = {}
-    
-    #depthidx = lasfile.data[depthmnem]['values']
-    
-    depthdata = {}
-    depthdata["name"] = depthmnem
-    depthdata["unit"] = lasfile.data[depthmnem]['unit']
-    depthdata["data"] = lasfile.data[depthmnem]['values']
-    depthdata["displayname"] = getdisplayname(depthdata["name"], depthdata["unit"])
-    
-    welldata["depth"] = depthdata
-    
-    if litomnem in lasfile.data.keys():
-        litoidx = lasfile.curvesnames.index(litomnem)
-        litodata = {}
-        litodata["name"] = litomnem
-        litodata["unit"] = ''
-        
-        litoarray = lasfile.data[litoidx]
-        isnan = np.isnan(litoarray)
-        litoarray[isnan] = nolito
-        litoarray = litoarray.astype(int)
-        
-        litodata["data"] = litoarray
-        litodata["displayname"] = litomnem
-        
-        welldata["lito"] = litodata
-    
-    for curvekey, mnem in mnemoics.items():
-        curvedata = {}
-        curvedata["name"] = mnem
-        curvedata["unit"] = None
-        curvedata["data"] = []
-        curvedata["displayname"] = mnem
-        
-        for idx, curvename in enumerate(lasfile.data.keys()):
-            if not curvename.startswith(mnem):
-                continue
-            if curvedata["unit"] is None:
-                curvedata["unit"] = lasfile.data[curvename]['unit']
-                #curvedata["displayname"] = getdisplayname(curvedata["name"], curvedata["unit"])
-                curvedata["displayname"] = curvename
-            
-            curvedata["data"].append(lasfile.data[curvename]['values'])
-        
-        if len(curvedata["data"]) > 1:
-            curvedata["data"] = mergelogs(curvedata["data"])
-        elif len(curvedata["data"]) == 1:
-            curvedata["data"] = curvedata["data"][0]
-        
-        welldata[curvekey] = curvedata
-         
-    logdata[wellname] = welldata
-    
-    print("Done!")
-
-print("")
-
-###
-
-print("Begining interactive Passey Method.")
-
-wellnameslist = list(sorted(logdata.keys()))
-choosewellprompt = "Choose well:\n{}\n> ".format('\n'.join(["{}. {}".format(a, b) for a, b in enumerate(["Close"] + wellnameslist)]))
-
-limits = config["visualization"].pop("limits")
-colors = config["visualization"].pop("colors")
-
-initialparameters = config.pop("initialparameters")
-
-smoothing = config["others"].pop("smoothing")
-resampling = config["others"].pop("resampling")
+def load_configuration():
+    with open(_CONFIG_PATH, "r") as f:
+        return json.load(f)
 
 
-while True:
-    resp = raw_input(choosewellprompt)
-    print("")
-    try:
-        resp = int(resp)
-    except:
-        print("Invalid choice!")
-        continue
-    
-    if resp == 0:
-        print("Closing program.")
-        break
-    elif resp > len(wellnameslist) or resp < 0:
-        print("Invalid choice!")
-        continue
-    else:
-        wellname = wellnameslist[resp-1]
-    
-    if wellname not in labdata:
-        print("Skipping well {}: no lab data.".format(wellname))
-        continue
-    
-    print("Well {}.".format(wellname))
-    
-    labdepth = labdata[wellname]['top']
-    labtoc = labdata[wellname]['toc']
-    
-    depth = logdata[wellname]["depth"]['data']
-    dt = logdata[wellname]["dt"]['data']
-    logrt = np.log10(logdata[wellname]["rt"]['data'])
-    gr = logdata[wellname]["gr"]['data']
-    cali = logdata[wellname]["cali"]['data']
-    
-    #if 'lito' in logdata[wellname]:
-    #    uselito = True
-    #    lito = logdata[wellname]["lito"]['data']
-    #else:
-    uselito = False
-    
-    depth -= _DEPTHSHIFT
-    labdepth -= _DEPTHSHIFT
-    
-    w = np.isfinite(dt)*np.isfinite(logrt)*np.isfinite(gr)*np.isfinite(cali)
-    
-    depthlim = np.max(depth[w]), np.min(depth[w])
-    
+def load_lab_data(config):
+    labconfig = dict(config["labdata"])
+    rows = dict(labconfig.pop("rows"))
+    csvfilename = labconfig.pop("filename")
+
+    with codecs.open(csvfilename, encoding="latin-1") as csvfile:
+        _csvheader, csvdata = readcsv.readcsv(csvfile, **labconfig)
+
+    wells = np.array(csvdata[rows.pop("well")], dtype=str)
+    labdata = {}
+
+    for wellname in np.unique(wells):
+        labdata[wellname] = {}
+        where = wells == wellname
+        for key, index in rows.items():
+            labdata[wellname][key] = np.array(csvdata[index], dtype=float)[where]
+
+    return labdata
+
+
+def load_log_data(config):
+    logconfig = dict(config["logdata"])
+    lasfilesdir = logconfig.pop("lasfilesdir")
+    mnemonics = dict(logconfig.pop("mnemoics"))
+    depthmnem = mnemonics.pop("depth")
+
+    logdata = {}
+
+    for lasfilename in sorted(os.listdir(lasfilesdir)):
+        if not lasfilename.lower().endswith(".las"):
+            continue
+
+        lasfile = las2.LAS2Parser(os.path.join(lasfilesdir, lasfilename))
+        wellname = os.path.splitext(lasfilename)[0]
+
+        welldata = {
+            "depth": {
+                "name": depthmnem,
+                "unit": lasfile.data[depthmnem]["unit"],
+                "data": lasfile.data[depthmnem]["values"].copy(),
+                "displayname": getdisplayname(depthmnem, lasfile.data[depthmnem]["unit"]),
+            }
+        }
+
+        for curvekey, mnemonic in mnemonics.items():
+            curvedata = {
+                "name": mnemonic,
+                "unit": None,
+                "data": [],
+                "displayname": mnemonic,
+            }
+
+            for curvename, curve in lasfile.data.items():
+                if not curvename.startswith(mnemonic):
+                    continue
+                if curvedata["unit"] is None:
+                    curvedata["unit"] = curve["unit"]
+                    curvedata["displayname"] = curvename
+                curvedata["data"].append(curve["values"].copy())
+
+            if len(curvedata["data"]) > 1:
+                curvedata["data"] = mergelogs(curvedata["data"])
+            elif len(curvedata["data"]) == 1:
+                curvedata["data"] = curvedata["data"][0]
+            else:
+                raise KeyError("Curve '{}' was not found in {}.".format(mnemonic, lasfilename))
+
+            welldata[curvekey] = curvedata
+
+        logdata[wellname] = welldata
+
+    return logdata
+
+
+def color_for(name):
+    return _PLOTLY_COLORS.get(name, name)
+
+
+def prepare_well_data(wellname, config, labdata, logdata):
+    limits = config["visualization"]["limits"]
+    initial = config["initialparameters"]
+    smoothing = config["others"]["smoothing"]
+    resampling = config["others"]["resampling"]
+
+    depth = logdata[wellname]["depth"]["data"].astype(float).copy() - _DEPTHSHIFT
+    labdepth = labdata[wellname]["top"].astype(float).copy() - _DEPTHSHIFT
+
+    dt = logdata[wellname]["dt"]["data"].astype(float).copy()
+    rt = logdata[wellname]["rt"]["data"].astype(float).copy()
+    gr = logdata[wellname]["gr"]["data"].astype(float).copy()
+    cali = logdata[wellname]["cali"]["data"].astype(float).copy()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logrt = np.log10(rt)
+
+    finite = np.isfinite(dt) & np.isfinite(logrt) & np.isfinite(gr) & np.isfinite(cali)
+    if not np.any(finite):
+        raise ValueError("Well '{}' has no finite DT, RT, GR and CALI overlap.".format(wellname))
+
+    shallow = float(np.min(depth[finite]))
+    deep = float(np.max(depth[finite]))
+
     if smoothing["smooth"]:
         windowtype = smoothing["window"]
         if isinstance(windowtype, list):
             windowtype = tuple(windowtype)
         windowdata = signal.windows.get_window(windowtype, smoothing["windowsize"], False)
         windowdata /= np.sum(windowdata)
-        dt2 = np.convolve(dt, windowdata, 'same')
-        logrt2 = np.convolve(logrt, windowdata, 'same')
+        dt2 = np.convolve(dt, windowdata, "same")
+        logrt2 = np.convolve(logrt, windowdata, "same")
     else:
-        dt2 = dt
-        logrt2 = logrt
-    
+        dt2 = dt.copy()
+        logrt2 = logrt.copy()
+
     if resampling["resample"]:
-        depth2 = np.linspace(depthlim[0], depthlim[1], resampling["npoints"])
+        depth2 = np.linspace(deep, shallow, resampling["npoints"])
         dt2 = np.interp(depth2, depth, dt2)
         logrt2 = np.interp(depth2, depth, logrt2)
     else:
-        depth2 = depth
-    
-    dtbli = initialparameters["dtbaseline"]
-    logrtbli = initialparameters["logrtbaseline"]
-    lomi = initialparameters["lom"]
-    
-    toci = passeymethod(dt2, logrt2, dtbli, logrtbli, lomi)
-    
-    mainfigure = plt.figure(figsize=(16, 9))
-    
-    legendheight = 0.07
-    depthwidth = 0.04
-    
-    left = 0.005 + depthwidth
-    
-    plt.subplots_adjust(left=left, right=0.995, bottom=0.005, top=0.995-2*legendheight, wspace=0.0)
-    
-    ###
-    
-    ax1 = plt.subplot(1, 5, 1)
-    logplot(ax1, depth, gr, colorsdict[colors["gr"]], limits["gr"], depthlim)
-    caliplot = (limits['gr'][1] - limits['gr'][0])*(cali - limits['cali'][0])/(limits['cali'][1] - limits['cali'][0]) + limits['gr'][0]
-    logplot(ax1, depth, caliplot, colorsdict[colors["cali"]], limits["gr"], depthlim)
-    
-    ax1.set_xticks([30.0, 60.0, 90.0, 120.0])
-    
-    rect = getlegendrect(ax1, 0.0, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, logdata[wellname]["gr"]['displayname'], limits["gr"], colorsdict[colors["gr"]], '-', fontsize=_FONTSIZE)
-    
-    rect = getlegendrect(ax1, legendheight, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, logdata[wellname]["cali"]['displayname'], limits["cali"], colorsdict[colors["cali"]], '-', fontsize=_FONTSIZE)
-    
-    ###
-    
-    ax2 = plt.subplot(1, 5, 2)
-    logplot(ax2, depth, dt, colorsdict[colors["dt"]], limits["dt"], depthlim)
-    
-    ax2.set_xticks([150.0, 100.0, 50.0])
-    
-    rect = getlegendrect(ax2, 0.0, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, logdata[wellname]["dt"]['displayname'], limits["dt"], colorsdict[colors["dt"]], '-', fontsize=_FONTSIZE)
-    
-    rect = getlegendrect(ax2, legendheight, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, "Baseline", limits["dt"], colorsdict[colors["baseline"]], '-', linewidth=3.0, fontsize=_FONTSIZE)
-    
-    if smoothing["smooth"] and smoothing["show"]:
-        logplot(ax2, depth2, dt2, colorsdict[colors["logrt"]], limits["dt"], depthlim)
-        
-        # rect = getlegendrect(ax2, legendheight, legendheight)
-        # aux = plt.axes(rect)
-        # loglegend(aux, logdata[wellname]["dt"]['displayname'] + " (Smooth)", limits["dt"], colorsdict[colors["logrt"]], '-', fontsize=_FONTSIZE)
-    
-    blpdt = BaselinePicker(ax2, color=colorsdict[colors["baseline"]], x0=dtbli, linewidth=3.0)
-    blpdt.connect()
-    
-    ###
-    
-    ax3 = plt.subplot(1, 5, 3)
-    logplot(ax3, depth, logrt, colorsdict[colors["logrt"]], limits["logrt"], depthlim)
-    
-    ax3.set_xticks([0.0, 1.0, 2.0])
-    
-    rect = getlegendrect(ax3, 0.0, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, "log({})".format(logdata[wellname]["rt"]['displayname']), limits["logrt"], colorsdict[colors["logrt"]], '-', fontsize=_FONTSIZE)
-    
-    rect = getlegendrect(ax3, legendheight, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, "Baseline", limits["logrt"], colorsdict[colors["baseline"]], '-', linewidth=3.0, fontsize=_FONTSIZE)
-    
-    if smoothing["smooth"] and smoothing["show"]:
-        logplot(ax3, depth2, logrt2, colorsdict[colors["dt"]], limits["logrt"], depthlim)
-        
-        # rect = getlegendrect(ax3, legendheight, legendheight)
-        # aux = plt.axes(rect)
-        # loglegend(aux, "log({})".format(logdata[wellname]["rt"]['displayname']) + " (Smooth)", limits["logrt"], colorsdict[colors["dt"]], '-', fontsize=_FONTSIZE)
-    
-    blplogrt = BaselinePicker(ax3, color=colorsdict[colors["baseline"]], x0=logrtbli, linewidth=3.0)
-    blplogrt.connect()
-    
-    ###
-    
-    ax4 = plt.subplot(1, 5, 4)
-    dtline = logplot(ax4, depth, -(dt - dtbli)*0.02, colorsdict[colors["dt"]], limits["dtlogr"], depthlim)
-    logrtline = logplot(ax4, depth, (logrt - logrtbli), colorsdict[colors["logrt"]], limits["dtlogr"], depthlim)
-    
-    ax4.set_xticks([0.0, 1.0, 2.0])
-    
-    rect = getlegendrect(ax4, 0.0, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, "-0.02x({} - baseline)".format(logdata[wellname]["dt"]['name']), limits["dtlogr"], colorsdict[colors["dt"]], '-', fontsize=_FONTSIZE)
-    
-    rect = getlegendrect(ax4, legendheight, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, "log({}) - baseline".format(logdata[wellname]["rt"]['name']), limits["dtlogr"], colorsdict[colors["logrt"]], '-', fontsize=_FONTSIZE)
-    
-    ###
+        depth2 = depth.copy()
 
-    to_save = {
-        'DEPT':np.flip(depth2),
-        'TOC':np.flip(toci)
+    caliplot = (
+        (limits["gr"][1] - limits["gr"][0])
+        * (cali - limits["cali"][0])
+        / (limits["cali"][1] - limits["cali"][0])
+        + limits["gr"][0]
+    )
+
+    return {
+        "wellname": wellname,
+        "depth": depth,
+        "depth2": depth2,
+        "dt": dt,
+        "dt2": dt2,
+        "rt": rt,
+        "logrt": logrt,
+        "logrt2": logrt2,
+        "gr": gr,
+        "cali": cali,
+        "caliplot": caliplot,
+        "labdepth": labdepth,
+        "labtoc": labdata[wellname]["toc"].astype(float).copy(),
+        "shallow": shallow,
+        "deep": deep,
+        "dtbaseline": float(initial["dtbaseline"]),
+        "logrtbaseline": float(initial["logrtbaseline"]),
+        "lom": float(initial["lom"]),
     }
 
-    df = pd.DataFrame(to_save)
-    df.to_csv('toc.csv', index=False)
-    
-    ax5 = plt.subplot(1, 5, 5)
-    tocline = logplot(ax5, depth2, toci, colorsdict[colors["toc"]], limits["toc"], depthlim)
-    logplot(ax5, labdepth, labtoc, colorsdict[colors["labtoc"]], limits["toc"], depthlim, style="o")
-    
-    ax5.set_xticks([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
-    
-    rect = getlegendrect(ax5, 0.0, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, "COT calculado (%)", limits["toc"], colorsdict[colors["toc"]], '-', fontsize=_FONTSIZE)
-    
-    rect = getlegendrect(ax5, legendheight, legendheight)
-    aux = plt.axes(rect)
-    loglegend(aux, "COT medido (%)", limits["toc"], colorsdict[colors["labtoc"]], 'o', fontsize=_FONTSIZE)
-    
-    dtll = LiveLine(dtline)
-    logrtll = LiveLine(logrtline)
-    tocll = LiveLine(tocline)
 
-    print(limits)
-    
-    ###
-    
-    rect = getdepthrect(ax1, -depthwidth*int(uselito), depthwidth)
-    depthax = plt.axes(rect)
-    emptytrack(depthax, depthlim)
-    
-    rect = getlegendrect(depthax, 0.0, 2*legendheight)
-    aux = plt.axes(rect)
-    depthlegend(aux, logdata[wellname]["depth"]['displayname'], fontsize=_FONTSIZE)
-    
-    litoax = None
-    
-    if uselito:
-        rect = getdepthrect(ax1, 0.0, depthwidth)
-        litoax = plt.axes(rect)
-        classificationplot(litoax, depth, lito, depthlim)
-        
-        rect = getlegendrect(litoax, 0.0, 2*legendheight)
-        aux = plt.axes(rect)
-        depthlegend(aux, logdata[wellname]["lito"]['displayname'], fontsize=_FONTSIZE)
-    
-    ###
-    
-    mainaxes = [ax1, ax2, ax3, ax4, ax5]
-    
-    if uselito:
-        mainaxes.append(litoax)
-    
-    ###
-    
-    # ax = plt.axes([0.2, 0.95, 0.6, 0.025])
-    lomfigure = plt.figure(figsize=(5, 1))
-    ax = plt.axes([0.025, 0.5, 0.95, 0.475])
-    
-    plt.xlabel("LOM")
-    plt.xticks(range(21))
-    plt.yticks([])
-    lompicker = LOMPicker(ax, color=colorsdict[colors["baseline"]], x0=lomi, linewidth=3.0)
-    lompicker.connect()
-    
-    ###
-    
-    depthfigure = plt.figure(figsize=(3, 6))
-    ax = plt.axes([0.5, 0.025, 0.475, 0.95])
-    
-    plt.ylabel(logdata[wellname]["depth"]['displayname'])
-    # plt.yticks(range(21))
-    plt.xticks([])
-    dptcntr = DepthController(ax, depthlim, color=colorsdict[colors["baseline"]], linewidth=3.0)
-    dptcntr.connect()
-    
-    ###
-    
-    def callbacklom(event):
-        if event == 'start_moving':
-            tocll.start_life()
-        elif event == 'moving':
-            dtbl = baselinedatatolog(depth2, *blpdt.getdata())
-            logrtbl = baselinedatatolog(depth2, *blplogrt.getdata())
-            lom = lompicker.getdata()
-            
-            tocdata = passeymethod(dt2, logrt2, dtbl, logrtbl, lom)
-            tocll.set_data(tocdata, depth2)
-        else:
-            tocll.end_life()
-    
-    def callbackdt(event):
-        if event == 'start_moving':
-            dtll.start_life()
-            callbacklom(event)
-        elif event == 'moving':
-            dtbl = baselinedatatolog(depth, *blpdt.getdata())
-            dtll.set_data(-(dt - dtbl)*0.02, depth)
-            callbacklom(event)
-        else:
-            dtll.end_life()
-            callbacklom(event)
-    
-    def callbacklogrt(event):
-        if event == 'start_moving':
-            logrtll.start_life()
-            callbacklom(event)
-        elif event == 'moving':
-            logrtbl = baselinedatatolog(depth, *blplogrt.getdata())
-            logrtll.set_data(logrt - logrtbl, depth)
-            callbacklom(event)
-        else:
-            logrtll.end_life()
-            callbacklom(event)
-    
-    def callbackdepth(event):
-        if event == 'end_moving':
-            ylim = dptcntr.getdata()
-            for ax in mainaxes:
-                ax.set_ylim(ylim)
-            
-            for i in reversed(range(len(depthax.texts))):
-                depthax.texts[i].remove()
-            
-            depthax.set_ylim(ylim)
-            
-            yticks = depthax.get_yticks()
-            for tick in yticks:
-                if tick < ylim[0] and tick > ylim[1]:
-                    depthax.text(0.5, tick, "X{:g}".format(tick % 1000).replace('.', ','), ha='center', va='center', fontsize=_FONTSIZE)
-            
-            mainfigure.canvas.draw() 
-    
-    def callbackclose(event):
-        plt.close('all')
-    
-    mainfigure.canvas.mpl_connect('close_event', callbackclose)
-    
-    blpdt.callback = callbackdt
-    blplogrt.callback = callbacklogrt
-    lompicker.callback = callbacklom
-    dptcntr.callback = callbackdepth
-    
-    callbackdepth("end_moving")
-    
-    plt.show()
+def line_trace(x, y, name, color, xaxis=None):
+    trace = go.Scattergl(
+        x=x,
+        y=y,
+        mode="lines",
+        name=name,
+        line={"color": color, "width": 1.5},
+        hovertemplate="%{x:.3f}<br>Depth %{y:.2f}<extra>" + name + "</extra>",
+    )
+    if xaxis:
+        trace.update(xaxis=xaxis)
+    return trace
+
+
+def build_log_figure(well, config, baseline_state, lom, depth_range):
+    limits = config["visualization"]["limits"]
+    colors = config["visualization"]["colors"]
+    logdata = APP_DATA["logdata"]
+
+    shallow, deep = sorted([float(depth_range[0]), float(depth_range[1])])
+    dtbaseline = float(baseline_state["dt"])
+    logrtbaseline = float(baseline_state["logrt"])
+
+    dtbl = baselinedatatolog(well["depth2"], dtbaseline)
+    logrtbl = baselinedatatolog(well["depth2"], logrtbaseline)
+    toc = passeymethod(well["dt2"], well["logrt2"], dtbl, logrtbl, float(lom))
+
+    pd.DataFrame({"DEPT": np.flip(well["depth2"]), "TOC": np.flip(toc)}).to_csv(
+        _OUTPUT_CSV, index=False
+    )
+
+    dt_delta = -0.02 * (well["dt"] - dtbaseline)
+    logrt_delta = well["logrt"] - logrtbaseline
+
+    fig = make_subplots(
+        rows=1,
+        cols=5,
+        shared_yaxes=True,
+        horizontal_spacing=0.015,
+        column_widths=[0.18, 0.2, 0.2, 0.2, 0.22],
+        subplot_titles=(
+            "{} / {}".format(
+                logdata[well["wellname"]]["gr"]["displayname"],
+                logdata[well["wellname"]]["cali"]["displayname"],
+            ),
+            "{} baseline".format(logdata[well["wellname"]]["dt"]["displayname"]),
+            "log({}) baseline".format(logdata[well["wellname"]]["rt"]["displayname"]),
+            "Delta log R",
+            "TOC",
+        ),
+    )
+
+    fig.add_trace(
+        line_trace(well["gr"], well["depth"], "GR", color_for(colors["gr"])), row=1, col=1
+    )
+    fig.add_trace(
+        line_trace(well["caliplot"], well["depth"], "CALI", color_for(colors["cali"])),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        line_trace(well["dt"], well["depth"], "DT", color_for(colors["dt"])), row=1, col=2
+    )
+    fig.add_trace(
+        line_trace(well["logrt"], well["depth"], "log(ILD)", color_for(colors["logrt"])),
+        row=1,
+        col=3,
+    )
+    fig.add_trace(
+        line_trace(dt_delta, well["depth"], "-0.02 x DT", color_for(colors["dt"])),
+        row=1,
+        col=4,
+    )
+    fig.add_trace(
+        line_trace(logrt_delta, well["depth"], "log RT", color_for(colors["logrt"])),
+        row=1,
+        col=4,
+    )
+    fig.add_trace(
+        line_trace(toc, well["depth2"], "Calculated TOC", color_for(colors["toc"])),
+        row=1,
+        col=5,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=well["labtoc"],
+            y=well["labdepth"],
+            mode="markers",
+            name="Measured TOC",
+            marker={"color": color_for(colors["labtoc"]), "size": 8},
+            hovertemplate="%{x:.3f}<br>Depth %{y:.2f}<extra>Measured TOC</extra>",
+        ),
+        row=1,
+        col=5,
+    )
+
+    baseline_color = color_for(colors["baseline"])
+    fig.add_shape(
+        type="line",
+        x0=dtbaseline,
+        x1=dtbaseline,
+        y0=shallow,
+        y1=deep,
+        xref="x2",
+        yref="y2",
+        line={"color": baseline_color, "width": 4},
+        editable=True,
+    )
+    fig.add_shape(
+        type="line",
+        x0=logrtbaseline,
+        x1=logrtbaseline,
+        y0=shallow,
+        y1=deep,
+        xref="x3",
+        yref="y3",
+        line={"color": baseline_color, "width": 4},
+        editable=True,
+    )
+
+    fig.update_xaxes(range=limits["gr"], row=1, col=1, title_text="GR")
+    fig.update_xaxes(range=limits["dt"], row=1, col=2, title_text="DT")
+    fig.update_xaxes(range=limits["logrt"], row=1, col=3, title_text="log(ILD)")
+    fig.update_xaxes(range=limits["dtlogr"], row=1, col=4, title_text="Delta log R")
+    fig.update_xaxes(range=limits["toc"], row=1, col=5, title_text="TOC (%)")
+
+    for idx in range(1, 6):
+        fig.update_yaxes(range=[deep, shallow], row=1, col=idx)
+
+    fig.update_layout(
+        template="plotly_white",
+        margin={"l": 12, "r": 12, "t": 54, "b": 42},
+        height=760,
+        dragmode="pan",
+        hovermode="closest",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+        uirevision="passey-dashboard",
+    )
+
+    fig.update_yaxes(title_text=logdata[well["wellname"]]["depth"]["displayname"], row=1, col=1)
+
+    return fig
+
+
+def build_depth_marks(shallow, deep):
+    marks = {}
+    for value in np.linspace(shallow, deep, 7):
+        marks[int(round(value))] = str(int(round(value)))
+    return marks
+
+
+def normalize_baseline_state(well, baseline_state):
+    if baseline_state is None:
+        return {"dt": well["dtbaseline"], "logrt": well["logrtbaseline"]}
+    return {
+        "dt": float(baseline_state.get("dt", well["dtbaseline"])),
+        "logrt": float(baseline_state.get("logrt", well["logrtbaseline"])),
+    }
+
+
+def apply_shape_edits(relayout_data, baseline_state):
+    if not relayout_data:
+        return baseline_state
+
+    updated = dict(baseline_state)
+    shape_to_key = {0: "dt", 1: "logrt"}
+
+    for shape_idx, key in shape_to_key.items():
+        values = []
+        for attr in ("x0", "x1"):
+            relayout_key = "shapes[{}].{}".format(shape_idx, attr)
+            if relayout_key in relayout_data:
+                values.append(float(relayout_data[relayout_key]))
+
+        nested_shapes = relayout_data.get("shapes")
+        if isinstance(nested_shapes, list) and len(nested_shapes) > shape_idx:
+            shape = nested_shapes[shape_idx]
+            if isinstance(shape, dict):
+                for attr in ("x0", "x1"):
+                    if attr in shape:
+                        values.append(float(shape[attr]))
+
+        if values:
+            updated[key] = float(np.mean(values))
+
+    return updated
+
+
+CONFIG = load_configuration()
+APP_DATA = {
+    "config": CONFIG,
+    "labdata": load_lab_data(CONFIG),
+    "logdata": load_log_data(CONFIG),
+}
+AVAILABLE_WELLS = [
+    wellname for wellname in sorted(APP_DATA["logdata"].keys()) if wellname in APP_DATA["labdata"]
+]
+
+if not AVAILABLE_WELLS:
+    raise RuntimeError("No LAS wells with matching lab data were found.")
+
+
+app = Dash(__name__)
+app.title = "Passey TOC Method"
+
+first_well = prepare_well_data(AVAILABLE_WELLS[0], CONFIG, APP_DATA["labdata"], APP_DATA["logdata"])
+
+app.layout = html.Div(
+    [
+        dcc.Store(id="baseline-store"),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.Label("Well", className="control-label"),
+                        dcc.Dropdown(
+                            id="well-dropdown",
+                            options=[{"label": well, "value": well} for well in AVAILABLE_WELLS],
+                            value=AVAILABLE_WELLS[0],
+                            clearable=False,
+                        ),
+                    ],
+                    className="well-selector",
+                ),
+                html.Div(id="baseline-readout", className="readout"),
+            ],
+            className="topbar",
+        ),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.Div("Depth", className="panel-title"),
+                        dcc.RangeSlider(
+                            id="depth-range",
+                            min=first_well["shallow"],
+                            max=first_well["deep"],
+                            value=[first_well["shallow"], first_well["deep"]],
+                            marks=build_depth_marks(first_well["shallow"], first_well["deep"]),
+                            step=0.5,
+                            vertical=True,
+                            verticalHeight=690,
+                            tooltip={"placement": "right", "always_visible": False},
+                        ),
+                    ],
+                    className="depth-panel",
+                ),
+                html.Div(
+                    [
+                        dcc.Graph(
+                            id="main-graph",
+                            className="main-graph",
+                            config={
+                                "displaylogo": False,
+                                "scrollZoom": True,
+                                "editable": True,
+                                "edits": {"shapePosition": True},
+                                "modeBarButtonsToAdd": ["drawline", "eraseshape"],
+                            },
+                        ),
+                        html.Div(
+                            [
+                                html.Div("LOM", className="panel-title"),
+                                dcc.Slider(
+                                    id="lom-slider",
+                                    min=0,
+                                    max=20,
+                                    value=first_well["lom"],
+                                    step=0.1,
+                                    marks={i: str(i) for i in range(0, 21, 2)},
+                                    tooltip={"placement": "bottom", "always_visible": True},
+                                ),
+                            ],
+                            className="lom-panel",
+                        ),
+                    ],
+                    className="main-panel",
+                ),
+            ],
+            className="dashboard",
+        ),
+    ],
+    className="app-shell",
+)
+
+app.index_string = """
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            * { box-sizing: border-box; }
+            body {
+                margin: 0;
+                background: #f4f6f8;
+                color: #1f2933;
+                font-family: Arial, Helvetica, sans-serif;
+            }
+            .app-shell {
+                min-height: 100vh;
+                padding: 14px;
+            }
+            .topbar {
+                align-items: center;
+                background: #ffffff;
+                border: 1px solid #d8dee6;
+                border-radius: 8px;
+                display: flex;
+                gap: 20px;
+                justify-content: space-between;
+                margin-bottom: 12px;
+                padding: 10px 14px;
+            }
+            .well-selector {
+                align-items: center;
+                display: grid;
+                gap: 8px;
+                grid-template-columns: auto 220px;
+            }
+            .control-label,
+            .panel-title {
+                color: #52616f;
+                font-size: 13px;
+                font-weight: 700;
+                text-transform: uppercase;
+            }
+            .readout {
+                color: #35495e;
+                font-size: 14px;
+                text-align: right;
+            }
+            .dashboard {
+                display: grid;
+                gap: 12px;
+                grid-template-columns: 104px minmax(0, 1fr);
+            }
+            .depth-panel,
+            .lom-panel,
+            .main-panel {
+                background: #ffffff;
+                border: 1px solid #d8dee6;
+                border-radius: 8px;
+            }
+            .depth-panel {
+                align-items: center;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                padding: 12px 8px;
+            }
+            .main-panel {
+                min-width: 0;
+                overflow: hidden;
+            }
+            .main-graph {
+                height: 760px;
+            }
+            .lom-panel {
+                border-left: 0;
+                border-right: 0;
+                border-bottom: 0;
+                border-radius: 0;
+                padding: 10px 22px 18px;
+            }
+            @media (max-width: 900px) {
+                .dashboard {
+                    grid-template-columns: 1fr;
+                }
+                .depth-panel {
+                    align-items: stretch;
+                    min-height: 180px;
+                }
+                .topbar {
+                    align-items: stretch;
+                    flex-direction: column;
+                }
+                .readout {
+                    text-align: left;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+"""
+
+
+@app.callback(
+    Output("depth-range", "min"),
+    Output("depth-range", "max"),
+    Output("depth-range", "value"),
+    Output("depth-range", "marks"),
+    Output("lom-slider", "value"),
+    Output("baseline-store", "data", allow_duplicate=True),
+    Input("well-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def reset_controls_for_well(wellname):
+    well = prepare_well_data(wellname, CONFIG, APP_DATA["labdata"], APP_DATA["logdata"])
+    return (
+        well["shallow"],
+        well["deep"],
+        [well["shallow"], well["deep"]],
+        build_depth_marks(well["shallow"], well["deep"]),
+        well["lom"],
+        {"dt": well["dtbaseline"], "logrt": well["logrtbaseline"]},
+    )
+
+
+@app.callback(
+    Output("baseline-store", "data"),
+    Input("main-graph", "relayoutData"),
+    State("well-dropdown", "value"),
+    State("baseline-store", "data"),
+)
+def update_baseline_from_shape(relayout_data, wellname, baseline_state):
+    well = prepare_well_data(wellname, CONFIG, APP_DATA["labdata"], APP_DATA["logdata"])
+    baseline_state = normalize_baseline_state(well, baseline_state)
+    return apply_shape_edits(relayout_data, baseline_state)
+
+
+@app.callback(
+    Output("main-graph", "figure"),
+    Output("baseline-readout", "children"),
+    Input("well-dropdown", "value"),
+    Input("baseline-store", "data"),
+    Input("lom-slider", "value"),
+    Input("depth-range", "value"),
+)
+def update_graph(wellname, baseline_state, lom, depth_range):
+    well = prepare_well_data(wellname, CONFIG, APP_DATA["labdata"], APP_DATA["logdata"])
+    baseline_state = normalize_baseline_state(well, baseline_state)
+    if depth_range is None:
+        depth_range = [well["shallow"], well["deep"]]
+
+    figure = build_log_figure(well, CONFIG, baseline_state, lom, depth_range)
+    readout = "DT baseline: {:.3f} | log(ILD) baseline: {:.3f} | LOM: {:.1f}".format(
+        baseline_state["dt"], baseline_state["logrt"], float(lom)
+    )
+    return figure, readout
+
+
+if __name__ == "__main__":
+    print("Starting Passey TOC dashboard.")
+    print("Open http://127.0.0.1:8050 in your browser.")
+    app.run(debug=False, host="127.0.0.1", port=8050)

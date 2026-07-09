@@ -19,11 +19,11 @@
     "lasfilesdir": "DADOS",
     "mnemoics":
         {
-            "depth": "DEPTH",
-            "dt": "DTCO",
-            "rt": "RES90",
+            "depth": "DEPT",
+            "dt": "DT",
+            "rt": "ILD",
             "gr": "GR",
-            "cali": "HCAL"
+            "cali": "CALI"
         }
     },
 "visualization":
